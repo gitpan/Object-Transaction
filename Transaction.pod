@@ -392,6 +392,7 @@ These are:
 	__toremove
 	__transdata
 	__readonly
+	__trivial
 
 None of these should be touched. 
 

@@ -6,7 +6,7 @@
 
 package Object::Transaction;
 
-$VERSION = 0.94;
+$VERSION = 0.95;
 my $magic_cookie = "O:Ta";
 my $lock_debugging = 0;
 
@@ -184,7 +184,15 @@ sub load
 			delete $obj->{'__transleader'};
 			delete $obj->{'__rollback'};
 		}
-		$obj->_realsave();
+
+		eval {
+			$obj->_realsave();
+		};
+		if ($@ =~ /^DATACHANGE: file/) {
+			delete $cache{$package}{$id};
+			return load($package, $baseid);
+		}
+		die $@ if $@;
 	}
 
 	if ($obj->{'__removenow'}) {
@@ -241,11 +249,16 @@ sub remove
 
 sub savelater
 {
-	my ($this) = @_;
+	my ($this, $trivial) = @_;
 	confess "attempt to call savelater() from within a presave() or postsave()"
 		if $commit_inprogress == 2;
 	$tosave{ref $this}{$this->id()} = $this;
 	$this->{'__readonly'} = 0;
+	if ($trivial) {
+		$this->{'__trivial'} = 1;
+	} else {
+		delete $this->{'__trivial'};
+	}
 }
 
 sub readlock
@@ -311,7 +324,7 @@ sub commit
 		if $commit_inprogress;
 	local($commit_inprogress) = 1;
 
-	return unless %tosave;
+	return 0 unless %tosave;
 
 	my @commitlist;
 	my %precommitdone;
@@ -341,7 +354,7 @@ sub commit
 	if (@savelist == 1) {
 		$savelist[0]->_realsave();
 		%tosave = ();
-		return;
+		return 1;
 	}
 
 	my $leader = shift(@savelist);
@@ -352,9 +365,10 @@ sub commit
 	for my $s (@savelist) {
 		die "attemp to save an 'uncached' object" 
 			if exists $s->{'__uncached'};
-		$leader->{'__transfollowers'}{ref($s)}{$s->id()} = 1;
 		$leader->{'__toremove'}{ref($s)}{$s->id()} = 1
 			if $s->{'__deletenow'};
+		next if $s->{'__trivial'};
+		$leader->{'__transfollowers'}{ref($s)}{$s->id()} = 1;
 		$s->{'__transleader'} = {
 			'CLASS' => ref($leader),
 			'ID' => $leader->id(),
@@ -390,6 +404,7 @@ sub commit
 	}
 
 	%tosave = ();
+	return 1;
 }
 
 sub _realsave

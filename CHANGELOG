@@ -1,4 +1,10 @@
 
+= 2000/03/04	0.95
+
+Bugs fixed
+
+	* loading an object could cause DATACHANGE exception.  Fixed.
+
 = 2000/01/30	0.94
 
 Bugs fixed
