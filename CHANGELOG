@@ -1,5 +1,15 @@
 
-= 1999/11/15
+= 1999/11/18	0.92
+
+Now storing in network byte order with a header on each file.
+
+postload now receives the id as an argument.
+
+= 1999/11/16	0.91
+
+Ported to perl 5.005_03.
+
+= 1999/11/15	0.9
 
 Inital revision.
 

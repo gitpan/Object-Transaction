@@ -6,7 +6,8 @@
 
 package Object::Transaction;
 
-$VERSION = 0.91;
+$VERSION = 0.92;
+my $magic_cookie = "O:Ta";
 
 require File::Flock;
 use Storable;
@@ -99,11 +100,13 @@ sub load
 	return undef unless -e $file;
 	_lock $file;
 	my $frozen = _read_file($file);
+	$frozen =~ s/^\Q$magic_cookie\E//o 
+		or die "corrupt file: $file";
 	my $obj = Storable::thaw $frozen;
 	$obj->{'OLD'} = Storable::thaw $frozen;
 	$obj->{'OLD'}{'__frozen'} = \$frozen;
 
-	$obj->postload();
+	$obj->postload($id);
 
 	_unlock $file;
 
@@ -119,7 +122,7 @@ sub load
 		$obj = Storable::thaw ${$obj->{'__rollback'}};
 		$cache{$package}{$id} = $obj;
 		_lock $file;
-		$obj->postload();
+		$obj->postload($id);
 		_unlock $file;
 		$obj->_realsave();
 	} elsif ($obj->{'__transleader'}) {
@@ -133,7 +136,7 @@ sub load
 			$obj = Storable::thaw ${$obj->{'__rollback'}};
 			$cache{$package}{$id} = $obj;
 			_lock $file;
-			$obj->postload();
+			$obj->postload($id);
 			_unlock $file;
 		} else {
 			delete $obj->{'__transleader'};
@@ -278,7 +281,7 @@ sub commit
 	my $leader = shift(@savelist);
 	$leader->{'__rollback'} = exists $leader->{'OLD'} 
 			? $leader->{'OLD'}{'__frozen'} 
-			: Storable::freeze { '__removenow' => 1 };
+			: Storable::nfreeze { '__removenow' => 1 };
 
 	for my $s (@savelist) {
 		die "attemp to save an 'uncached' object" 
@@ -292,7 +295,7 @@ sub commit
 		};
 		$s->{'__rollback'} = exists $s->{'OLD'}
 			? $s->{'OLD'}{'__frozen'} 
-			: Storable::freeze { '__removenow' => 1 };
+			: Storable::nfreeze { '__removenow' => 1 };
 	}
 
 	delete $leader->{'__readonly'};
@@ -334,6 +337,8 @@ sub _realsave
 	if (defined $old) {
 		_lock $file unless $keeplock;
 		my $frozen = _read_file($file);
+		$frozen =~ s/^\Q$magic_cookie\E//o 
+			or die "corrupt file: $file";
 		if ($frozen ne ${$old->{'__frozen'}}) {
 			_unlock $file unless $keeplock;
 			_unlock $unlock if $unlock;
@@ -353,8 +358,8 @@ sub _realsave
 	delete $this->{'OLD'};
 	delete $this->{'__readonly'};
 
-	my $newfrozen = Storable::freeze($this);
-	_write_file("$file.tmp", $newfrozen);
+	my $newfrozen = Storable::nfreeze($this);
+	_write_file("$file.tmp", $magic_cookie, $newfrozen);
 
 	rename("$file.tmp", $file) 
 		or die "rename $file.tmp -> $file: $!";

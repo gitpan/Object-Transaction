@@ -16,7 +16,18 @@ printf "1..%d\n", 86;
 
 my $debug = -t STDOUT;
 
+my $magic_cookie = "O:Ta"; # must match Transaction.pm
+
 *read_file = \&Object::Transaction::_read_file;
+
+sub read_frozen
+{
+	my ($file) = @_;
+	my $x = read_file($file);
+	$x =~ s/^\Q$magic_cookie\E//o 
+		or die "corrupt file: $file";
+	return Storable::thaw($x);
+}
 
 sub okay
 {
@@ -38,8 +49,7 @@ sub dumpfile
 {
 	my ($file) = @_;
 	require Data::Dumper;
-	my $x = read_file($file);
-	my $ref = Storable::thaw($x);
+	my $ref = read_frozen($file);
 	print "Contents of $file:\n";
 	print Data::Dumper::Dumper($ref);
 	print "\n";
@@ -266,11 +276,11 @@ Object::Transaction->uncache();
 
 	Object::Transaction->abandon();
 
-	my $xsue = Storable::thaw(scalar(read_file("$tmp/1")));
-	my $xbob = Storable::thaw(scalar(read_file("$tmp/2")));
-	my $xfred = Storable::thaw(scalar(read_file("$tmp/3")));
-	my $xjames = Storable::thaw(scalar(read_file("$tmp/4")));
-	my $xjohn = Storable::thaw(scalar(read_file("$tmp/5")));
+	my $xsue = read_frozen("$tmp/1");
+	my $xbob = read_frozen("$tmp/2");
+	my $xfred = read_frozen("$tmp/3");
+	my $xjames = read_frozen("$tmp/4");
+	my $xjohn = read_frozen("$tmp/5");
 
 	okay ($xfred->{'Y'} == 7);
 	okay (! ($xfred->{'Q'} && $xfred->{'Q'} == 99));
@@ -298,11 +308,11 @@ Object::Transaction->uncache();
 
 	my $fred = load Employee 'fred';
 
-	my $ysue = Storable::thaw(scalar(read_file("$tmp/1")));
-	my $ybob = Storable::thaw(scalar(read_file("$tmp/2")));
-	my $yfred = Storable::thaw(scalar(read_file("$tmp/3")));
-	my $yjames = Storable::thaw(scalar(read_file("$tmp/4")));
-	my $yjohn = Storable::thaw(scalar(read_file("$tmp/5")));
+	my $ysue = read_frozen("$tmp/1");
+	my $ybob = read_frozen("$tmp/2");
+	my $yfred = read_frozen("$tmp/3");
+	my $yjames = read_frozen("$tmp/4");
+	my $yjohn = read_frozen("$tmp/5");
 
 	okay (! $ysue->{'__transfollowers'});
 	okay (! $ybob->{'__transfollowers'});
@@ -364,11 +374,11 @@ Object::Transaction->uncache();
 
 	Object::Transaction->abandon();
 
-	my $xsue = Storable::thaw(scalar(read_file("$tmp/1")));
-	my $xbob = Storable::thaw(scalar(read_file("$tmp/2")));
-	my $xfred = Storable::thaw(scalar(read_file("$tmp/3")));
-	my $xjames = Storable::thaw(scalar(read_file("$tmp/4")));
-	my $xjohn = Storable::thaw(scalar(read_file("$tmp/5")));
+	my $xsue = read_frozen("$tmp/1");
+	my $xbob = read_frozen("$tmp/2");
+	my $xfred = read_frozen("$tmp/3");
+	my $xjames = read_frozen("$tmp/4");
+	my $xjohn = read_frozen("$tmp/5");
 
 	okay ($xfred->{'Y'} == 77);
 	okay (! ($xfred->{'Q'} && $xfred->{'Q'} == 99));
@@ -396,11 +406,11 @@ Object::Transaction->uncache();
 
 	my $fred = load Employee 'fred';
 
-	my $ysue = Storable::thaw(scalar(read_file("$tmp/1")));
-	my $ybob = Storable::thaw(scalar(read_file("$tmp/2")));
-	my $yfred = Storable::thaw(scalar(read_file("$tmp/3")));
-	my $yjames = Storable::thaw(scalar(read_file("$tmp/4")));
-	my $yjohn = Storable::thaw(scalar(read_file("$tmp/5")));
+	my $ysue = read_frozen("$tmp/1");
+	my $ybob = read_frozen("$tmp/2");
+	my $yfred = read_frozen("$tmp/3");
+	my $yjames = read_frozen("$tmp/4");
+	my $yjohn = read_frozen("$tmp/5");
 
 	okay (! $ysue->{'__transfollowers'});
 	okay (! $ybob->{'__transfollowers'});

@@ -277,7 +277,7 @@ No lock on the underlying file is present at the time C<preload> is called.
 
 X<postload>
 
-=item C<postload()>
+=item C<postload($id)>
 
 C<postload> is invoked after the object has been loaded into memory but
 before transaction completeness is checked.
