@@ -1,30 +1,38 @@
 
-# Copyright (C) 1999, Internet Journals Corporation <www.bepress.com>.   
+# Copyright (C) 1999-2002, Internet Journals Corporation <www.bepress.com>.
+# Copyright (C) 2002 David Muir Sharnoff
 # All rights reserved.  License hearby granted for anyone to use this 
 # module at their own risk.   Please feed useful changes back to 
 # David Muir Sharnoff <muir@idiom.com>.
 
 package Object::Transaction;
 
-$VERSION = 0.95;
-my $magic_cookie = "O:Ta";
+my %cache;
+
+$VERSION = 1.01;
 my $lock_debugging = 0;
+my $debug = 0;
+my $warnings = 0;
+my $registered;
 
 require File::Flock;
 use Storable;
 use POSIX qw(O_CREAT O_RDWR);
 require File::Sync;
 use Carp;
+use Carp qw(verbose);
+use vars qw($magic_cookie);
+$magic_cookie = "O:Ta";
 
 require Exporter;
 @ISA = qw(Exporter);
-@EXPORT = qw(transaction commit abandon);
+@EXPORT = qw(transaction transaction_pending commit abandon uncache);
 
 use strict;
 
 # things to override
 
-sub new { die "deferred" }
+sub initialize { die "deferred" }
 sub file { die "deferred" }
 sub presave {}
 sub postsave {}
@@ -67,6 +75,19 @@ sub _unlock
 	File::Flock::unlock($file);
 }
 
+sub _lockrename
+{
+	my ($from, $to) = @_;
+	if ($lock_debugging) {
+		my ($package, $filename, $line) = caller;
+		my ($package2, $filename2, $line2) = caller(1);
+		print STDERR "{$from->$to} $line, $line2";
+	}
+	$locks{$to} = $locks{$from};
+	delete $locks{$from};
+	File::Flock::lock_rename($from, $to);
+}
+
 sub _unlock_all
 {
 	for my $f (keys %locks) {
@@ -97,36 +118,69 @@ sub _write_file
 
 	no strict;
 
+	undef $!;
+	my $d = join('', @data);
+
 	local(*F,*O);
 	open(F, ">$f") || die "open >$f: $!";
 	$O = select(F);
 	$| = 1;
 	select($O);
-	(print F @data) || die "write $f: $!";
+	(print F $d) || die "write $f: $!";
 	File::Sync::fsync_fd(fileno(F)) || die "fsync $f: $!";
 	close(F) || die "close $f: $!";
+	if ($d && ! -s $f) {
+		# Houston, we have a problem!
+		# Let's try this again!
+		# this code may no longer be necessary.  
+		confess "cannot write $f: $!" 
+			if caller(50); # prevent deep recursion
+		print STDERR "Write to $f failed ($!), trying again\n"
+			if $warnings;
+		_write_file($f, $d);
+	}
 	return 1;
 }
 
 # now the meat
 
-my %cache;
+sub new
+{
+	my ($pkg, @args) = @_;
+	no strict 'refs';
+	my $obj = ${pkg}->initialize(@args);
+	bless $obj, $pkg;
+	$obj->cache;
+	return $obj;
+}
+
 use vars qw($commit_inprogress);
 $commit_inprogress = 0;
+my $firstload;
 
 sub load
 {
 	my ($package, $baseid) = @_;
 
+	print STDERR "LOAD $package $baseid\n" if $debug;
+
 	if (exists $cache{$package}{$baseid}) {
+		print STDERR "Returing cached $package $baseid\n" if $debug;
 		return $cache{$package}{$baseid};
 	}
 
-	my $newid = $package->preload($baseid);
+	my $newid;
+	eval {
+		$newid = $package->preload($baseid);
+	};
+	confess $@ if $@;
 
 	if ($newid && exists $cache{$package}{$newid}) {
+		print STDERR "Returing cached $package $baseid\n" if $debug;
 		return $cache{$package}{$newid};
 	}
+
+	$firstload = time unless $firstload;
 
 	my $id = $newid || $baseid;
 
@@ -134,27 +188,40 @@ sub load
 
 	my $file = $package->file($id);
 
+	# all method invocations can have side-effects.
+	if ($cache{$package}{$id}) {
+		print STDERR "Returing recently-cached $package $id\n" if $debug;
+		return $cache{$package}{$id};
+	}
+
+	# 
+	# No read-lock is required because files are only modified
+	# through rename rather than rewrite.
+	#
+	# This does create the possibility of a program failure if you
+	# try to read a file that is deleted at just the right time.
+	#
 	return undef unless -e $file;
-	_lock $file;
 	my $frozen = _read_file($file);
 	{
 		no re 'taint';
-		$frozen =~ m/^\Q$magic_cookie\E(.*)$/os
+		substr($frozen, 0, length($magic_cookie)) eq $magic_cookie
 			or die "corrupt file: $file";
-		$frozen = $1;
+		substr($frozen, 0, length($magic_cookie)) = '';
 	}
 	my $obj = Storable::thaw $frozen;
+	print STDERR "Pulling fresh copy for $package $id from $file\n" if $debug;
 	die "unable to thaw $file!" unless $obj;
 	$obj->{'OLD'} = Storable::thaw $frozen;
 	$obj->{'OLD'}{'__frozen'} = \$frozen;
 
 	$obj->postload($id);
 
-	_unlock $file;
-
 	$cache{$package}{$id} = $obj;
+	modperl_register() unless $registered;
 
 	if ($obj->{'__transfollowers'}) {
+		print STDERR "Transleader with followers\n" if $debug;
 		for my $class (sort keys %{$obj->{'__transfollowers'}}) {
 			for my $id (sort keys %{$obj->{'__transfollowers'}{$class}}) {
 				# will rollback as side-effect
@@ -168,6 +235,7 @@ sub load
 		_unlock $file;
 		$obj->_realsave();
 	} elsif ($obj->{'__transleader'}) {
+		print STDERR "Transfollower\n" if $debug;
 		my $leader = _loadany($obj->{'__transleader'}{'CLASS'}, 
 			    $obj->{'__transleader'}{'ID'});
 		if (exists $leader->{'__transfollower'}
@@ -189,7 +257,6 @@ sub load
 			$obj->_realsave();
 		};
 		if ($@ =~ /^DATACHANGE: file/) {
-			delete $cache{$package}{$id};
 			return load($package, $baseid);
 		}
 		die $@ if $@;
@@ -203,6 +270,25 @@ sub load
 	return $obj;
 }
 
+sub objectref
+{
+	my ($this) = @_;
+	my $id = $this->id();
+	die "id function returned empty on $this" unless $id;
+	return bless [ ref $this, $id ], 'Object::Transaction::Reference';
+}
+
+{
+	package Object::Transaction::Reference;
+
+	sub loadref
+	{
+		my ($ref) = @_;
+		my ($pkg, $id) = @$ref;
+		return Object::Transaction::_loadany($pkg, $id);
+	}
+}
+
 sub _loadany
 {
 	my ($pkg, $id) = @_;
@@ -210,7 +296,7 @@ sub _loadany
 	unless (defined @{"${pkg}::ISA"}) {
 		require "$pkg.pm";
 	}
-	return load($pkg, $id);
+	return ${pkg}->load($id);
 }
 
 my %tosave;
@@ -218,6 +304,20 @@ my %tosave;
 sub abandon
 {
 	%tosave = ();
+}
+
+sub cache
+{
+	my ($this) = @_;
+	my $pkg = ref $this;
+	my $id = $this->id();
+	confess unless defined $id;
+	confess "id clash with $pkg $id\n" 
+		if $cache{$pkg} 
+			&& defined $cache{$pkg}{$id} 
+			&& $cache{$pkg}{$id} ne $this;
+	$cache{$pkg}{$id} = $this;
+	modperl_register() unless $registered;
 }
 
 sub uncache
@@ -228,6 +328,7 @@ sub uncache
 		$this->{'__uncached'} = 1;
 	} else {
 		%cache = ();
+		undef $firstload;
 	}
 }
 
@@ -249,22 +350,33 @@ sub remove
 
 sub savelater
 {
-	my ($this, $trivial) = @_;
+	my ($this, $trivial, $code) = @_;
 	confess "attempt to call savelater() from within a presave() or postsave()"
 		if $commit_inprogress == 2;
-	$tosave{ref $this}{$this->id()} = $this;
+	my $id = $this->id();
+	confess "id not defined" unless defined $id;
+	$tosave{ref $this}{$id} = $this;
 	$this->{'__readonly'} = 0;
+	if ($code) {
+		$this->{'__doatsave'} = []
+			unless $this->{'__doatsave'};
+	}
 	if ($trivial) {
 		$this->{'__trivial'} = 1;
 	} else {
 		delete $this->{'__trivial'};
 	}
+	$this->cache() unless $this->{'OLD'};
+
+	check_hash($this);
 }
 
 sub readlock
 {
 	my ($this) = @_;
-	$tosave{ref $this}{$this->id()} = $this;
+	my $id = $this->id();
+	confess unless defined $id;
+	$tosave{ref $this}{$id} = $this;
 	$this->{'__readonly'} = 1
 		unless exists $this->{'__readonly'};
 }
@@ -278,15 +390,30 @@ sub save
 	commit();
 }
 
+sub transaction_pending
+{
+	return 1 if %tosave;
+	return 0;
+}
+
 sub transaction
 {
-	my ($ref, $funcref, @args) = @_;
+	eval {
+		require ObjTransLclCnfg;
+	};
+	shift if ref $_[0] ne 'CODE';
+	my ($funcref, @args) = @_;
 	my (%c) = (%cache);
 	my $r;
 	my @r;
+	my $want = wantarray();
+	my $die = 0;
+	my $count = 0;
 	for(;;) {
+		die if $die; # protect against 'next' et al inside eval
+		$die = 1;
 		eval {
-			if (wantarray()) {
+			if ($want) {
 				@r = &$funcref(@args);
 			} else {
 				$r = &$funcref(@args);
@@ -294,13 +421,18 @@ sub transaction
 		};
 		if ($@ =~ /^DATACHANGE: file/) {
 			%cache = %c;
+			print STDERR "Restarting transaction: $@" if $warnings;
+			$die = 0;
+			die "Aborting Transaction -- Too many locking failures ($count): $@"
+				if $ObjTransLclCnfg::maxtries
+					&& $count++ > $ObjTransLclCnfg::maxtries;
 			redo;
 		}
 		require Carp;
 		Carp::croak $@ if $@;
 		last;
 	}
-	return @r if wantarray();
+	return @r if $want;
 	return $r;
 }
 
@@ -317,6 +449,7 @@ sub transaction
 #
 
 my $unlock;
+my $datachangefailures;
 
 sub commit
 {
@@ -352,8 +485,13 @@ sub commit
 	$commit_inprogress = 2;
 
 	if (@savelist == 1) {
-		$savelist[0]->_realsave();
+		if ($savelist[0]->{'__removenow'}) {
+			$savelist[0]->_realremove();
+		} else {
+			$savelist[0]->_realsave();
+		}
 		%tosave = ();
+		$datachangefailures = 0;
 		return 1;
 	}
 
@@ -404,9 +542,11 @@ sub commit
 	}
 
 	%tosave = ();
+	$datachangefailures = 0;
 	return 1;
 }
 
+my $srand;
 sub _realsave
 {
 	my ($this, $keeplock) = @_;
@@ -421,12 +561,33 @@ sub _realsave
 	if (defined $old) {
 		_lock $file unless $keeplock;
 		my $frozen = _read_file($file);
-		$frozen =~ s/^\Q$magic_cookie\E//o 
+		substr($frozen, 0, length($magic_cookie)) eq $magic_cookie
 			or die "corrupt file: $file";
+		substr($frozen, 0, length($magic_cookie)) = '';
 		if ($frozen ne ${$old->{'__frozen'}}) {
 			_unlock_all();
-			%cache = ();
-			die "DATACHANGE: file $file changed out from under us, please retry";
+			abandon();
+			uncache();
+			srand(time ^ ($$ < 5)) 
+				unless $srand;
+			$srand = 1;
+			require Time::HiRes;
+			my $st = rand(0.5)*(1.3**$datachangefailures);
+			$st = ($st % 200 + 100) if $st > 300;
+			printf STDERR "DATACHANGE sleep %d for %.2f seconds\n", $$, $st
+				if $warnings;
+			Time::HiRes::sleep($st);
+			printf STDERR "DATACHANGE sleep %d done\n", $$
+				if $warnings;
+			$datachangefailures++;
+			$firstload = undef;
+			if ($this->{__poison}) {
+				die "Cached object from previous transaction reused";
+			}
+			$this->{__poison} = 'DATACHANGE';
+			warn "DATACHANGE: file $file changed out from under $$\n"
+				if $warnings;
+			die "DATACHANGE: file $file changed out from under $$, please retry";
 		}
 		if ($this->{'__readonly'}) {
 			_unlock $file unless $keeplock;
@@ -442,8 +603,16 @@ sub _realsave
 	my $newfrozen = Storable::nfreeze($this);
 	_write_file("$file.tmp", $magic_cookie, $newfrozen);
 
+	_lock "$file.tmp";
+
+	confess("write failed on $file.tmp") unless -s "$file.tmp";
+
 	rename("$file.tmp", $file) 
 		or die "rename $file.tmp -> $file: $!";
+
+	die unless -e $file;
+
+	_lockrename("$file.tmp", $file);
 
 	$this->postsave($old, @passby);
 
@@ -489,5 +658,48 @@ sub old
 	return undef;
 }
 
+sub check_hash
+{
+	# Look for references used as hash keys.
+	# XXXX Turn this off in production.
+	my ($hash_ref) = @_;
+
+	for my $key (keys %{$hash_ref}) {
+		if($key =~ /HASH\(0x[0-9a-f]+\)/) {
+			confess "Hash used as a key; class: " . ref($hash_ref) . 
+				"; value: $hash_ref->{$key}\n";
+		} else {
+			my $val = $hash_ref->{$key};
+			if(ref($val) eq 'HASH') {
+				check_hash($val);
+			}
+		}
+	}
+}
+
+sub modperl_register
+{
+	$registered = 1;
+	return unless $ENV{MOD_PERL};
+	Apache->push_handlers("PerlCleanupHandler", \&modperl_cleanup);
+}
+
+sub modperl_cleanup
+{
+	$registered = 0;
+	undef %locks;
+	undef %tosave;
+	$datachangefailures = 0;
+	$commit_inprogress = 0;
+
+	#
+	# This next one is debateable.  If we don't clear
+	# out the cache then the process will grow and grow.
+	# If we don't clear out the cache we will have many
+	# more aborted transactions.  An in-between setting
+	# is probably necessary.  
+	#
+	undef %cache;
+}
 
 1;

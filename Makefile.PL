@@ -13,19 +13,22 @@ WriteMakefile(
 	'PREREQ_PM' => {
 		'File::Sync'	=> 0,
 		'Storable'	=> 0,
-		'File::Flock'	=> 99.121701,
+		'File::Flock'	=> 101.060501,
 	},
+	EXE_FILES => [
+		'otedit', 'otview'
+	],
 );
 
 package MY;
 
 sub postamble {
-    <<"END_OF_POSTAMBLE";
+    <<'END_OF_POSTAMBLE';
 
 pm_to_blib: README
 
 README: Transaction.pod
-\tpod2text Transaction.pod >README
+	pod2text Transaction.pod >$@
 
 END_OF_POSTAMBLE
 }

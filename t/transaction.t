@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl -I.
+#!/usr/bin/perl -I. -w
 
 my $tmp;
 BEGIN	{
@@ -12,7 +12,7 @@ use Storable;
 use strict;
 
 my $c = 1;
-printf "1..%d\n", 86;
+print "1..88\n";
 
 my $debug = -t STDOUT;
 
@@ -21,7 +21,8 @@ my $magic_cookie = "O:Ta"; # must match Transaction.pm
 *read_file = \&Object::Transaction::_read_file;
 
 $SIG{'ALRM'} = \&report_where;
-alarm(300);
+
+okay($Object::Transaction::VERSION == 1.01);
 
 sub report_where
 {
@@ -39,17 +40,18 @@ sub read_frozen
 
 sub okay
 {
-	my ($cond) = @_;
+	my ($cond, $message) = @_;
 	if ($cond) {
 		print "ok $c\n";
 	} else {
 		if ($debug) {
 			my($package, $filename, $line, $subroutine, $hasargs, $wantarray, $evaltext, $is_require) = caller(0);
-			print "not ok $c: $filename:$line\n";
+			print "not ok $c: $filename:$line $message\n";
 		} else {
 			print "not ok $c\n";
 		}
 	}
+	alarm(300);
 	$c++;
 }
 
@@ -64,15 +66,16 @@ sub dumpfile
 }
 
 {
-	no strict;
 	package Counter;
+	no strict;
 	@ISA = qw(Object::Transaction);
-	use Carp;
 	use strict;
+	use Carp;
 
 	sub new {
 		my ($pkg, $name) = @_;
 		my $counter = bless { 'ID' => $name, 'COUNT' => 1};
+		$counter->cache();
 		$counter->savelater();
 		return $counter;
 	}
@@ -102,13 +105,13 @@ sub dumpfile
 }
 
 {
-	no strict;
 	package Employee;
+	no strict;
 	@ISA = qw(Object::Transaction);
 	*read_file = \&Object::Transaction::_read_file;
 	*write_file = \&Object::Transaction::_write_file;
-	use Carp;
 	use strict;
+	use Carp;
 
 	sub new {
 		my ($pkg, $name, $boss) = @_;
@@ -131,12 +134,6 @@ sub dumpfile
 		$id = $ref->{'ID'} unless $id;
 		confess() unless $id;
 		return "$tmp/$id";
-	}
-	sub getnext
-	{
-		my ($this) = @_;
-		$this->savelater();
-		return ($this->{'COUNT'}++);
 	}
 	sub presave {
 	}
@@ -178,6 +175,7 @@ sub dumpfile
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# populate some records
 {
 	my $sue = new Employee 'sue';			# 1
 	my $bob = new Employee 'bob', 'sue';		# 2
@@ -191,6 +189,8 @@ Object::Transaction->uncache();
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# check caching
+# check pre-&post save functions
 {
 	my $sueid = read_file("$tmp/sue");
 	okay ($sueid == 1);
@@ -208,6 +208,9 @@ Object::Transaction->uncache();
 	my $john = load Employee 'john';
 	my $fred = load Employee 'fred';
 	my $bob = load Employee 'bob';
+
+	okay($bob->id() == 2);
+
 	my $bob2 = load Employee 2;
 	my $bob3 = load Employee 'bob';
 
@@ -218,6 +221,7 @@ Object::Transaction->uncache();
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# check opportunistic locking failure
 {
 	eval {
 		my $bob1 = load Employee 'bob';
@@ -234,8 +238,8 @@ Object::Transaction->uncache();
 
 	okay ($@ =~ /^DATACHANGE: file/);
 
-	Object::Transaction->abandon();
 
+	Object::Transaction->abandon();
 	Object::Transaction->uncache();
 
 	my $bob = load Employee 'bob';
@@ -245,6 +249,8 @@ Object::Transaction->uncache();
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# test opportunistic locking failure 
+# rollback details
 {
 	eval {
 		my $james1 = load Employee 'james';
@@ -344,6 +350,8 @@ Object::Transaction->uncache();
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# test opportunistic locking failures
+# more rollback details
 {
 	eval {
 		my $james1 = load Employee 'james';
@@ -442,6 +450,7 @@ Object::Transaction->uncache();
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# test transaction() replay of failed transactions
 {
 	my $seq = 0;
 
@@ -463,6 +472,7 @@ Object::Transaction->uncache();
 		my $sue = load Employee 'sue';
 		my $john = load Employee 'john';
 
+		$james1->{SEQ} = $seq;
 		$james1->{'NX'} = 'mary had a little lamb';
 		$james2->{'X'} = 92;
 		$bob->{'PARM'} = $parm;
@@ -479,6 +489,8 @@ Object::Transaction->uncache();
 		$john->savelater();
 
 		Object::Transaction::commit();
+		okay(0, $seq) if $seq < 3;
+		#Object::Transaction->uncache();
 	};
 
 	Object::Transaction->transaction(\&testit, 12);
@@ -488,13 +500,14 @@ Object::Transaction->uncache();
 	my $james = load Employee 'james';
 
 	okay($bob->{'PARM'} == 12);
-	okay($john->{'SEQ'} == 3);
+	okay($john->{'SEQ'} == 3, $john->{SEQ});
 	okay($james->{'X'} == 92);
 }
 
 Object::Transaction->abandon();
 Object::Transaction->uncache();
 
+# test pre- & post- save fucntion
 {
 	okay (-e "$tmp/bob");
 

@@ -4,6 +4,13 @@ Object::Transaction - Virtual base class for transactions on files containing se
 
 =head1 SYNOPSIS
 
+	use Object::Transaction;
+
+	transaction($coderef, @codeargs);
+	commit();
+	abandon();
+	$there_is_a_pending_transaction = transaction_pending()
+	
 	package Pkg;
 
 	@ISA = qw(Object::Transaction);
@@ -22,6 +29,9 @@ Object::Transaction - Virtual base class for transactions on files containing se
 	$obj->uncache();
 	$obj->abandon();
 	$oldobj = $obj->old();
+
+	$reference = $obj->objectref();
+	$obj = $reference->loadref();
 
 	$id = sub id { ... }
 	$restart_commit = sub precommit() { }
@@ -58,7 +68,7 @@ because the data that is is based upon has changed out from under it.
 	sub new { 
 		my ($package, $login) = @_;
 		die unless getpwnam($login);
-		return bless { 'UID' => getpwnam($login) };
+		return bless { UID => getpwnam($login) };
 	}
 
 	sub file { 
@@ -69,7 +79,7 @@ because the data that is is based upon has changed out from under it.
 
 	sub id {
 		my ($this) = @_;
-		return $this->{'UID'};
+		return $this->{UID};
 	}
 
 	sub preload
@@ -84,16 +94,16 @@ because the data that is is based upon has changed out from under it.
 	{
 		my ($this) = @_;
 		my ($name,$passwd,$uid,$gid,$quota,$comment,$gcos,$dir,
-			$shell,$expire) = getpwuid($this->{'UID'});
-		$this->{'SHELL'} = $shell;
+			$shell,$expire) = getpwuid($this->{UID});
+		$this->{SHELL} = $shell;
 	}
 
 	sub presave
 	{
 		my ($this, $old) = @_;
-		my $id = $this->{'UID'};
+		my $id = $this->{UID};
 		mkdir("$top/users/$id", 0700);
-		delete $this->{'SHELL'};
+		delete $this->{SHELL};
 	}
 
 	sub postsave
@@ -125,14 +135,14 @@ B<Object::Transaction> provides the following methods.
 C<load> is the way to bring an object into memory.   It is usually
 invoked as C<my $obj = load MyObject $id>.   
 
-There are two opporunities to customize the behavior of C<load>:
+There are two opportunities to customize the behavior of C<load>:
 C<preload> for things that should happen before loading and
 C<postload> for things that should happen after loading.
 
-B<Object::Transaction> caches objects that are loaded.  This is done both for performance
-reasons and to make sure that only one copy of an object is in memory
-at a time.  If caching is not desired, the C<uncache> method must
-be invoked after loading.
+B<Object::Transaction> caches objects that are loaded.  This is
+done both for performance reasons and to make sure that only one
+copy of an object is in memory at a time.  If caching is not desired,
+the C<uncache> method must be invoked after loading.
 
 X<savelater>
 
@@ -142,7 +152,7 @@ C<savelater> is the usual method of saving an object.  The object
 is not saved at the time that C<savelater> is invoked.  It is actually
 saved when C<commit> is invoked.  
 
-There are two opporunities to customize the behavior of C<savelater>:
+There are two opportunities to customize the behavior of C<savelater>:
 C<presave> for things that should happen before saving and
 C<postsave> for things that should happen after saving.  These 
 are invoked when the object is actually being saved.
@@ -182,9 +192,10 @@ It is advisable to wrap your entire transaction inside an eval so
 that it can be re-tried in the event that the data on disk changed 
 between the time is was loaded and commited.  
 
-In the event of a commit
-failure, the object cache will be reset.  Do not keep any old references to
-objects after such a failure.
+In the event of a commit failure, the object cache will be reset.
+Do not keep any old references to objects after such a failure.  To
+avoid keeping old references, it is advised that the first C<load()>
+call happen inside the C<eval>.
 
 =item C<transaction($funcref,@args)>
 
@@ -198,8 +209,28 @@ The return value of C<transaction()> is the return value of C<&$funcref()>.
 
 It is not necessary to use the C<transaction()> method.  Just beware that
 C<commit()>, C<save()>, and C<remove()> can fail.   C<transaction()> will
-keep trying until it suceeds or it failes for a reason other than 
-an opportunistic locking problem.
+keep trying until it suceeds; it failes for a reason other than 
+an opportunistic locking problem; or it gives up because it has
+had too many (more than $ObjTransLclCnfg::maxtries) failures.
+
+It is important that objects not be cached from one invocation of 
+C<transaction()> to another.  The following would fail badly.
+
+	my $obj1 = load MyObject $obj1;
+
+	my $p = fork();
+
+	transaction(sub {
+		$obj1->savelater();
+		commit();
+	});
+
+To fix it, move the object load to inside the C<transaction()> call.
+
+=item C<transaction_pending()>
+
+C<transaction_pending()> returns true if there is a transaction pending.
+(savelater() called, but commit() not yet called).
 
 X<abandon>
 
@@ -212,8 +243,9 @@ X<uncache>
 
 =item C<uncache()>
 
-B<Object::Transaction> caches all objects.  To flush an object from B<Object::Transaction>'s cache,
-invoke the C<uncache> method on the object.  
+B<Object::Transaction> caches all objects.  To flush an object from
+B<Object::Transaction>'s cache, invoke the C<uncache> method on the
+object.
 
 Be careful when doing this -- it makes it possible to have more than
 one copy of the same object in memory.
@@ -234,10 +266,36 @@ freely.
 
 Paranoid programmers should use C<readlock()> on most objects.
 
+C<readlock()> doesn't actually lock objects, it just verifies that
+they haven't changed when the transaction commits.
+
 =item C<old()>
 
 Return the previous version of an object.  Previous is only 
 loosely defined.
+
+=item C<objectref()>
+
+Objectref creates a tiny object that is a reference to an object.  The
+reference can be turned back into the object by invoking C<loadref()>.
+For example:
+
+	$reference = $object->objectref();
+
+	$object = $reference->loadref();
+
+The reference is suitable for persistant storage as a member in a
+persistant object.
+
+=item C<cache()>
+
+Objects are cached so that multiple loads of the same identifier
+result in only one object in memory.  Newly created objects that
+are created with C<Object::Transaction::new> will be put in the
+cache immediately.  If an object is created some other way, and there
+is chance that it will be C<load()>ed before the tranaction commits,
+there is the potential for a problem.  Invoking C<cache()> puts an
+object into the cache so that C<load()> won't fail.
 
 =back
 
@@ -247,10 +305,11 @@ The following methods must be overriden.
 
 =over 15
 
-=item C<new>
+=item C<initialize>
 
-B<Object::Transaction> does not provide a contructor.  You must provide one
-yourself.
+B<Object::Transaction> provides a contructor.  The constructor provide
+delegates much of the work to a callback that you can override: 
+C<initialize()>.
 
 =item C<file($ref,$id)>
 
@@ -280,16 +339,17 @@ it might be called as C<preload("Joe")> to load the user named Joe, but
 if users are numbered rather than named it could return the number 
 for Joe.  A return value of undef is ignored.
 
-No lock on the underlying file is present at the time C<preload> is called.
-
-X<postload>
+No lock on the underlying file is present at the time C<preload> or 
+C<postload> is called.
 
 =item C<postload($id)>
 
 C<postload> is invoked after the object has been loaded into memory but
 before transaction completeness is checked.
 
-The underlying file is locked at the time that C<postload> is invoked. 
+The underlying file is not locked at the time that C<postload> is invoked. 
+Previous versions of Object::Transaction locked the underlying object while
+C<postload> was invoked.
 
 If a transaction rollback is required, C<postload> will be invoked again
 after the object has been reverted to its pre-transaction state.
@@ -352,9 +412,14 @@ X<id>
 
 =item C<id()>
 
-B<Object::Transaction> expect to be able to find the unique identifier (id) for each
+B<Object::Transaction> expects to be able to find the unique identifier (id) for each
 object as C<$obj->{'ID'}>.  If that isn't the case, you can override
 the C<id> function to provide an alternative.
+
+=item C<new()>
+
+The new method that Object::Transaction defines is minimal.  It does a callback
+to C<initialize()> as an additional hook for customization.
 
 =back
 
@@ -372,14 +437,14 @@ can be overridden by defining your own C<id> function.
 =item C<OLD>
 
 When an object is loaded into memory a copy is made.  The copy can
-be found at C<$obj->{'OLD'}>.  The copy should not be modified.
-The copy is explicitly passed in C<presave> and C<postsave>.
+be found at C<$obj->{OLD}>.  The copy should not be modified.
+The copy is explicitly passed to C<presave> and C<postsave>.
 
 =back
 
 =head1 PRIVATE MEMBER DATA
 
-B<Object::Transaction> ads a few data members to each object for 
+B<Object::Transaction> adds a few data members to each object for 
 its own internal use.
 
 These are:
@@ -393,8 +458,16 @@ These are:
 	__transdata
 	__readonly
 	__trivial
+	__atcommit
+	__poison
 
 None of these should be touched. 
+
+=head1 FUNCTIONS
+
+There are a few functions exported by Object::Transaction.   These
+functions are also available as methods.  They are C<transaction()>,
+C<transaction_pending()>, C<uncache()>, C<commit()>, and C<abandon()>.
 
 =head1 BUGS
 
@@ -413,7 +486,8 @@ David Muir Sharnoff <muir@idiom.com>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1999-2000, Internet Journals Corporation <www.bepress.com>.   
+Copyright (C) 1999-2002, Internet Journals Corporation <www.bepress.com>.   
+Copyright (C) 2002, David Muir Sharnoff.
 All rights reserved.  License hearby granted for anyone to use this 
 module at their own risk.   Please feed useful changes back to 
 David Muir Sharnoff <muir@idiom.com>.

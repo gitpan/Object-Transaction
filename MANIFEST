@@ -5,3 +5,5 @@ MANIFEST
 README
 CHANGELOG
 t/transaction.t
+otedit
+otview

@@ -1,4 +1,34 @@
 
+= 2002/11/15	1.01
+
+Object::Transaction is now in production use.
+
+The underlying object is no longer locked during loading.  If you
+have a preload() method, be aware that the object is no longer
+locked during the preload() call.
+
+The new() method is no longer something to override.  It has been
+replaced with initialize().  If you had a new method, that's
+okay, but make sure to call cache() from within it.
+
+Objects may now move during transactions.  If the file()
+method returns something different than it did before the
+transaction, the object will be moved.  It used to crash.
+
+Method invocations like C<presave()> may how have side-effects that
+effect the transaction like invoking C<savelater()> an another
+object.
+
+To create a reference to a persisted object, a new method is provided:
+->objectref().  This can be turned into an object with ->loadref().
+
+When used with mod_perl, the object cache will be automatically
+cleared each web hit.
+
+Added otedit & otview.
+
+Many bugs fixed.
+
 = 2000/03/04	0.95
 
 Bugs fixed
