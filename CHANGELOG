@@ -1,4 +1,9 @@
 
+= 1999/11/19	0.93
+
+Carey Evans <c.evans@clear.net.nz> points out that I really should use
+autoflush if I'm going to use sync.  Fixed.
+
 = 1999/11/18	0.92
 
 Now storing in network byte order with a header on each file.

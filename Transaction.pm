@@ -6,7 +6,7 @@
 
 package Object::Transaction;
 
-$VERSION = 0.92;
+$VERSION = 0.93;
 my $magic_cookie = "O:Ta";
 
 require File::Flock;
@@ -69,8 +69,11 @@ sub _write_file
 
 	no strict;
 
-	local(*F);
+	local(*F,*O);
 	open(F, ">$f") || die "open >$f: $!";
+	$O = select(F);
+	$| = 1;
+	select($O);
 	(print F @data) || die "write $f: $!";
 	File::Sync::fsync_fd(fileno(F)) || die "fsync $f: $!";
 	close(F) || die "close $f: $!";
