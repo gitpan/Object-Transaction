@@ -21,8 +21,10 @@ Object::Transaction - Virtual base class for transactions on files containing se
 	$obj->commit();
 	$obj->uncache();
 	$obj->abandon();
+	$oldobj = $obj->old();
 
 	$id = sub id { ... }
+	$restart_commit = sub precommit() { }
 	@passby = sub presave($old) { ... }
 	sub postsave($old,@passby) { ... }
 	$newid = sub preload($id) { .... }
@@ -232,6 +234,11 @@ freely.
 
 Paranoid programmers should use C<readlock()> on most objects.
 
+=item C<old()>
+
+Return the previous version of an object.  Previous is only 
+loosely defined.
+
 =back
 
 =head1 REQUIRED METHODS TO OVERRIDE
@@ -310,6 +317,8 @@ first loaded into memory.
 Any return values from C<presave> will be remembered and passed to 
 C<postsave>.
 
+C<presave> may not invoke C<save()>, C<commit()>, or C<savelater()>.
+
 X<postsave>
 
 =item C<postsave($old,@psv)>
@@ -325,6 +334,19 @@ The parameter C<$old> is a copy of the object as of the time it was
 first loaded into memory.
 
 The parameter C<@psv> is the return value from C<presave>.
+
+C<postsave> may not invoke C<save()>, C<commit()>, or C<savelater()>.
+
+X<precommit>
+
+=item C<precommit($old)>
+
+C<precommit> is invoked just before files are locked in C<commit()>.
+This is before C<presave()>.
+
+Unlike C<presave()> and C<postsave()>, C<precommit()> may use
+C<savelater()> to add new objects to the transaction.  If it does
+so, it must return a true value.
 
 X<id>
 
@@ -390,7 +412,7 @@ David Muir Sharnoff <muir@idiom.com>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1999, Internet Journals Corporation <www.bepress.com>.   
+Copyright (C) 1999-2000, Internet Journals Corporation <www.bepress.com>.   
 All rights reserved.  License hearby granted for anyone to use this 
 module at their own risk.   Please feed useful changes back to 
 David Muir Sharnoff <muir@idiom.com>.

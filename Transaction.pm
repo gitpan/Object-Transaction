@@ -6,13 +6,19 @@
 
 package Object::Transaction;
 
-$VERSION = 0.93;
+$VERSION = 0.94;
 my $magic_cookie = "O:Ta";
+my $lock_debugging = 0;
 
 require File::Flock;
 use Storable;
 use POSIX qw(O_CREAT O_RDWR);
 require File::Sync;
+use Carp;
+
+require Exporter;
+@ISA = qw(Exporter);
+@EXPORT = qw(transaction commit abandon);
 
 use strict;
 
@@ -31,19 +37,41 @@ sub id
 	my ($this) = @_;
 	return $this->{'ID'};
 }
+sub precommit {}
 
-my %cache;
+# a few wrappers
+
+my %locks;
 
 sub _lock
 {
 	my ($file) = @_;
+	if ($lock_debugging) {
+		my ($package, $filename, $line) = caller;
+		my ($package2, $filename2, $line2) = caller(1);
+		print STDERR "\n{{{{ $file $line, $line2";
+	}
+	$locks{$file} = 1;
 	File::Flock::lock($file);
 }
 
 sub _unlock
 {
 	my ($file) = @_;
+	if ($lock_debugging) {
+		my ($package, $filename, $line) = caller;
+		my ($package2, $filename2, $line2) = caller(1);
+		print STDERR "\n}}}} $file $line, $line2";
+	}
+	delete $locks{$file};
 	File::Flock::unlock($file);
+}
+
+sub _unlock_all
+{
+	for my $f (keys %locks) {
+		_unlock($f);
+	}
 }
 
 sub _read_file
@@ -80,6 +108,12 @@ sub _write_file
 	return 1;
 }
 
+# now the meat
+
+my %cache;
+use vars qw($commit_inprogress);
+$commit_inprogress = 0;
+
 sub load
 {
 	my ($package, $baseid) = @_;
@@ -103,9 +137,14 @@ sub load
 	return undef unless -e $file;
 	_lock $file;
 	my $frozen = _read_file($file);
-	$frozen =~ s/^\Q$magic_cookie\E//o 
-		or die "corrupt file: $file";
+	{
+		no re 'taint';
+		$frozen =~ m/^\Q$magic_cookie\E(.*)$/os
+			or die "corrupt file: $file";
+		$frozen = $1;
+	}
 	my $obj = Storable::thaw $frozen;
+	die "unable to thaw $file!" unless $obj;
 	$obj->{'OLD'} = Storable::thaw $frozen;
 	$obj->{'OLD'}{'__frozen'} = \$frozen;
 
@@ -203,6 +242,8 @@ sub remove
 sub savelater
 {
 	my ($this) = @_;
+	confess "attempt to call savelater() from within a presave() or postsave()"
+		if $commit_inprogress == 2;
 	$tosave{ref $this}{$this->id()} = $this;
 	$this->{'__readonly'} = 0;
 }
@@ -226,7 +267,7 @@ sub save
 
 sub transaction
 {
-	my ($this, $funcref, @args) = @_;
+	my ($ref, $funcref, @args) = @_;
 	my (%c) = (%cache);
 	my $r;
 	my @r;
@@ -266,7 +307,27 @@ my $unlock;
 
 sub commit
 {
+	confess "attemp to call commit() from within a precommit(), presave() or postsave()"
+		if $commit_inprogress;
+	local($commit_inprogress) = 1;
+
 	return unless %tosave;
+
+	my @commitlist;
+	my %precommitdone;
+
+	my $done = 0;
+	while (! $done) {
+		$done = 1;
+		for my $type (keys %tosave) {
+			for my $obj (values %{$tosave{$type}}) {
+				next if $precommitdone{$obj}++;
+				if ($obj->precommit($obj->old)) {
+					$done = 0;
+				}
+			}
+		}
+	}
 
 	my @savelist;
 	for my $cls (sort keys %tosave) {
@@ -274,6 +335,8 @@ sub commit
 			push(@savelist, $tosave{$cls}{$id});
 		}
 	}
+
+	$commit_inprogress = 2;
 
 	if (@savelist == 1) {
 		$savelist[0]->_realsave();
@@ -302,7 +365,9 @@ sub commit
 	}
 
 	delete $leader->{'__readonly'};
-	$unlock = $leader->file();
+	if (! -e $leader->file()) {
+		$leader->_realsave();
+	}
 	_lock $leader->file();
 	$leader->_realsave(1);
 
@@ -319,7 +384,6 @@ sub commit
 		$leader->_realsave(1);
 	}
 	_unlock $leader->file();
-	undef $unlock;
 
 	if (exists $leader->{'__removenow'}) {
 		$leader->_realremove();
@@ -335,7 +399,9 @@ sub _realsave
 	my $id = $this->id();
 	my $file = $this->file($id);
 
-	my $old = $this->{'OLD'};
+	my $old = $this->old();
+
+	my (@passby) = $this->presave($old);
 
 	if (defined $old) {
 		_lock $file unless $keeplock;
@@ -343,8 +409,7 @@ sub _realsave
 		$frozen =~ s/^\Q$magic_cookie\E//o 
 			or die "corrupt file: $file";
 		if ($frozen ne ${$old->{'__frozen'}}) {
-			_unlock $file unless $keeplock;
-			_unlock $unlock if $unlock;
+			_unlock_all();
 			%cache = ();
 			die "DATACHANGE: file $file changed out from under us, please retry";
 		}
@@ -356,8 +421,6 @@ sub _realsave
 		_lock $file unless $keeplock;
 	}
 
-	my (@passby) = $this->presave($old);
-
 	delete $this->{'OLD'};
 	delete $this->{'__readonly'};
 
@@ -368,6 +431,13 @@ sub _realsave
 		or die "rename $file.tmp -> $file: $!";
 
 	$this->postsave($old, @passby);
+
+	if ($file ne $this->file($id)) {
+		# can change sometimes
+		my $new = $this->file($id);
+		File::Flock::lock_rename($file, $new);
+		$file = $new;
+	}
 	_unlock $file
 		unless $keeplock;
 
@@ -396,5 +466,13 @@ sub _realremove
 	$this->postremove();
 	delete $cache{ref $this}{$this->id()} 
 }
+
+sub old
+{
+	my ($this) = @_;
+	return $this->{'OLD'} if exists $this->{'OLD'};
+	return undef;
+}
+
 
 1;

@@ -13,6 +13,7 @@ WriteMakefile(
 	'PREREQ_PM' => {
 		'File::Sync'	=> 0,
 		'Storable'	=> 0,
+		'File::Flock'	=> 99.121701,
 	},
 );
 

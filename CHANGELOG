@@ -1,4 +1,23 @@
 
+= 2000/01/30	0.94
+
+Bugs fixed
+
+	* locks should be released on transaction failure
+	* untaint file contents before thawing
+	* don't allow calls to save() or commit() from within {pre|post}save()
+	* various deadlock situations
+	* presave() can now change the location of the state file
+
+New callback:
+
+	* precommit() added to allow changed objects to change other objects
+	  prior to commit.
+
+New method: 
+
+	* old() provides pre-transaction value of object
+
 = 1999/11/19	0.93
 
 Carey Evans <c.evans@clear.net.nz> points out that I really should use

@@ -20,6 +20,14 @@ my $magic_cookie = "O:Ta"; # must match Transaction.pm
 
 *read_file = \&Object::Transaction::_read_file;
 
+$SIG{'ALRM'} = \&report_where;
+alarm(300);
+
+sub report_where
+{
+	confess;
+}
+
 sub read_frozen
 {
 	my ($file) = @_;
